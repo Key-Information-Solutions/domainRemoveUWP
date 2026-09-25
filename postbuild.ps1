@@ -3,9 +3,11 @@
 #      Overwriting the existing file keeps the same SharePoint item, so the
 #      portal / share URL keeps working and now serves the new build.
 #   2. Compute its SHA256.
-#   3. Stamp that hash into uninstall_bloatware() in the Computer Setup
-#      tool's installs.py (anchored on the share-link token of the exe's
-#      download URL, so only that entry can ever be touched).
+#   3. Stamp that hash into the removeUWP.exe pin in the Computer Setup
+#      tool's pins.json. The setup tool reads pins.json from the share at
+#      runtime, so the new exe is accepted as soon as OneDrive syncs -- no
+#      Computer Setup rebuild. Building this exe is the human "yes, ship
+#      this" that check-pins.py otherwise asks for.
 $ErrorActionPreference = 'Stop'
 
 $src  = Join-Path $PSScriptRoot 'dist\removeUWP.exe'
@@ -15,29 +17,26 @@ $hash = (Get-FileHash $dest -Algorithm SHA256).Hash
 Write-Host "Published : $dest"
 Write-Host "SHA256    : $hash"
 
-$installs = Join-Path $PSScriptRoot '..\..\Computer Setup\source code\installs.py'
-if (Test-Path $installs) {
-    # Share-link token of the exe's SharePoint URL inside uninstall_bloatware().
-    # If that share link is ever regenerated, update the URL in installs.py AND
-    # this marker to its new token.
-    $marker = 'EZv41R8oLOVFkMRYA7a_tgQBgvQTMSYzj6aQhe1570vHmw'
-    $installsPath = (Resolve-Path $installs).Path
-    $text = [IO.File]::ReadAllText($installsPath)
-    $pattern = "($marker[^\r\n]*?)[0-9A-Fa-f]{64}"
+$pins = Join-Path $PSScriptRoot '..\..\Computer Setup\source code\pins.json'
+if (Test-Path $pins) {
+    # Regex rather than ConvertTo-Json, which would reformat the whole file.
+    # Anchored on the pin's key, so only this entry can ever be touched.
+    $pinsPath = (Resolve-Path $pins).Path
+    $text = [IO.File]::ReadAllText($pinsPath)
+    $pattern = '("removeUWP\.exe"\s*:\s*\{[^}]*?"sha256"\s*:\s*")[0-9A-Fa-f]{64}'
     if ($text -match $pattern) {
         $new = $text -replace $pattern, ('${1}' + $hash)
         if ($new -ne $text) {
-            [IO.File]::WriteAllText($installsPath, $new)
-            Write-Host "installs.py: SHA256 updated for uninstall_bloatware()."
-            Write-Host "REMINDER  : rebuild the Computer Setup tool so the new hash ships."
+            [IO.File]::WriteAllText($pinsPath, $new)
+            Write-Host "pins.json : removeUWP.exe re-pinned (live once OneDrive syncs)."
         } else {
-            Write-Host "installs.py: hash already current."
+            Write-Host "pins.json : removeUWP.exe pin already current."
         }
     } else {
-        Write-Warning "installs.py: removeUWP entry not found (marker $marker)."
-        Write-Warning "Update its SHA256 manually to: $hash"
+        Write-Warning "pins.json: no removeUWP.exe pin found."
+        Write-Warning "Run check-pins.py in the Computer Setup source folder to pin: $hash"
     }
 } else {
-    Write-Warning "installs.py not found at $installs"
-    Write-Warning "Update its removeUWP SHA256 manually to: $hash"
+    Write-Warning "pins.json not found at $pins"
+    Write-Warning "Run check-pins.py in the Computer Setup source folder to pin: $hash"
 }

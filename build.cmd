@@ -1,7 +1,7 @@
 @echo off
 setlocal
 rem Builds dist\removeUWP.exe from host.cs with removeUWP.ps1 embedded inside,
-rem then publishes it to the folder root + stamps installs.py (postbuild.ps1).
+rem then publishes it to the folder root + stamps the Computer Setup pins.json (postbuild.ps1).
 rem Uses the C# compiler that ships with Windows (.NET Framework 4.x) -- no
 rem toolchain to install. Edit removeUWP.ps1, double-click this, done.
 rem NOTE: capture %~dp0 before cd -- it re-expands wrongly after cd when this
