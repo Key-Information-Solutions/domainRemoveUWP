@@ -1,5 +1,10 @@
 <#
     KIS Bloatware Cleaner - removeUWP.ps1
+    v2.5 (2026-09-25) - Dell Optimizer desktop app (4.x+) is now removed: its
+    two hidden MSIs (Dell Optimizer + Dell AppCore) via msiexec /qn, then the
+    InstallShield bundle entry Dell leaves behind. The existing
+    "DellInc.DellOptimizer" UWP entry only ever matched the legacy Store app.
+
     v2.4 (2026-09-23) - New -KeepOneDrive switch: keeps OneDrive (app + Store
     sync package) and the Office hub (part of Office for Business) while
     Teams is still removed. For
@@ -55,7 +60,7 @@ param(
     [string]$ScriptSource = 'direct'
 )
 
-$ScriptVersion = '2.4'
+$ScriptVersion = '2.5'
 
 # Self-elevate when launched as a bare .ps1 without admin. The exe wrapper
 # already forces elevation via its UAC manifest, so this only fires on direct
@@ -235,6 +240,62 @@ foreach ($saPath in @('C:\ProgramData\Dell\SARemediation',
     if (Test-Path $saPath) {
         Invoke-Step "Remove $saPath" { Remove-Item $saPath -Recurse -Force }
     }
+}
+
+# --- Dell Optimizer (Win32) ---
+# Optimizer 4+ is a desktop install, not the old Store app -- the
+# "DellInc.DellOptimizer" UWP entry below only catches legacy machines.
+# It ships as an InstallShield bundle (visible ARP entry, publisher "Dell
+# Technologies Inc.") wrapping two hidden MSIs (SystemComponent=1): "Dell
+# Optimizer" and "Dell AppCore". The MSIs are removed directly with msiexec
+# /qn -- deterministic and silent, unlike the bundle's own -remove UI. Dell
+# upgrades also leave the old bundle entry behind pointing at the previous
+# version (Bob-PC26, 2026-09-24: bundle said 6.3.1, MSIs were 6.3.3), so the
+# bundle entry is only cleaned up once its MSIs are gone. Dell Core Services /
+# TechHub is shared with Dell Command Update and is deliberately left alone.
+Write-Host "`n=== Dell Optimizer ==="
+$uninstallRoots = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+                  'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+$doArp = @(Get-ChildItem -Path $uninstallRoots -ErrorAction SilentlyContinue | Get-ItemProperty |
+    Where-Object { $_.Publisher -match 'Dell' -and $_.DisplayName -match '^Dell (Optimizer|AppCore)\b' })
+$doMsi    = @($doArp | Where-Object { $_.PSChildName -match '^\{[0-9A-F-]{36}\}$' -and $_.UninstallString -match 'msiexec' })
+$doBundle = @($doArp | Where-Object { $doMsi -notcontains $_ })
+
+if ($doArp) {
+    # Close the tray app and sub-agents so the MSI does not stall on files in use.
+    $doProcs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*\Dell\DellOptimizer\*' })
+    if ($doProcs) {
+        Invoke-Step "Stop Dell Optimizer processes ($(($doProcs.Name | Sort-Object -Unique) -join ', '))" {
+            $doProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+    }
+    # Optimizer before AppCore (AppCore is its runtime).
+    foreach ($msi in @($doMsi | Sort-Object { $_.DisplayName -match 'AppCore' })) {
+        Invoke-Step "Uninstall $($msi.DisplayName) $($msi.DisplayVersion) (MSI)" {
+            $p = Start-Process msiexec.exe -ArgumentList "/x $($msi.PSChildName) /qn /norestart" -Wait -PassThru
+            # 1605 = already gone (e.g. removed with its sibling); 3010/1641 = reboot pending.
+            if (@(0, 1605, 1641, 3010) -notcontains $p.ExitCode) { throw "msiexec exit $($p.ExitCode)" }
+        }
+    }
+    $msiLeft = @(Get-ChildItem -Path $uninstallRoots -ErrorAction SilentlyContinue | Get-ItemProperty |
+        Where-Object { $_.Publisher -match 'Dell' -and $_.DisplayName -match '^Dell (Optimizer|AppCore)\b' -and
+                       $_.UninstallString -match 'msiexec' })
+    if ($msiLeft -and -not $DryRun) {
+        Write-Warning "Dell Optimizer MSI(s) still installed ($($msiLeft.DisplayName -join ', ')) -- leaving the bundle entry in place."
+    } else {
+        foreach ($b in $doBundle) {
+            Invoke-Step "Remove orphaned bundle entry '$($b.DisplayName) $($b.DisplayVersion)'" {
+                Remove-Item -Path $b.PSPath -Recurse -Force
+                $isDir = "${env:ProgramFiles(x86)}\InstallShield Installation Information\$($b.PSChildName)"
+                if (Test-Path $isDir) { Remove-Item $isDir -Recurse -Force }
+            }
+        }
+        if (Test-Path 'C:\Program Files\Dell\DellOptimizer') {
+            Invoke-Step 'Remove C:\Program Files\Dell\DellOptimizer' { Remove-Item 'C:\Program Files\Dell\DellOptimizer' -Recurse -Force }
+        }
+    }
+} else {
+    Write-Host 'Dell Optimizer (desktop) not installed.'
 }
 
 # --- UWP / Store apps ---
