@@ -55,6 +55,7 @@ v1 — delete it once v2 is validated.
 | `-DryRun` | List everything that *would* be removed; change nothing |
 | `-Azure` | Force Entra mode (keep OneDrive/Teams/Office hub). Normally auto-detected |
 | `-RemoveOneDrive` | Remove OneDrive even on an Entra-joined machine |
+| `-KeepOneDrive` | Keep OneDrive **and** the Office hub (Teams still removed), regardless of join state. For on-prem-domain customers on Office for Business with no Teams/Entra (e.g. Colonial), where auto-detect would remove it. Can't be combined with `-RemoveOneDrive` |
 | `-Silent` | No "Press Enter" pause at the end — for RMM/automated runs |
 | `-DebugMode` | Pause before each step |
 | `-Embedded` | Skip the SharePoint fetch and run the copy baked into the exe (escape hatch if a bad edit lands on SharePoint) |

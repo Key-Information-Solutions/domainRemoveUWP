@@ -1,5 +1,11 @@
 <#
     KIS Bloatware Cleaner - removeUWP.ps1
+    v2.4 (2026-09-23) - New -KeepOneDrive switch: keeps OneDrive (app + Store
+    sync package) and the Office hub (part of Office for Business) while
+    Teams is still removed. For
+    on-prem-domain customers with Office for Business but no Teams/Entra
+    (e.g. Colonial), where auto-detect would otherwise remove OneDrive.
+
     v2.3 (2026-08-18) - Dell SupportAssist removal hardened. The MSIX build
     ships as "Dell.SupportAssistforPCs"; the app list only had the older
     "DellInc.DellSupportAssistforPCs", and because matching is exact the Store
@@ -31,6 +37,9 @@
                        (normally auto-detected via dsregcmd, flag kept for
                        muscle memory / odd cases like workgroup handoffs)
       -RemoveOneDrive  Remove OneDrive/Teams even on an Entra-joined machine
+      -KeepOneDrive    Keep OneDrive + Office hub (Teams still removed),
+                       regardless of join state. Cannot combine with
+                       -RemoveOneDrive
       -Silent          No pause at the end (for RMM / automated use)
       -DebugMode       Pause before each step
 #>
@@ -38,6 +47,7 @@ param(
     [switch]$DryRun,
     [switch]$Azure,
     [switch]$RemoveOneDrive,
+    [switch]$KeepOneDrive,
     [switch]$Silent,
     [switch]$DebugMode,
     # Set by the exe host: 'live' (fetched from SharePoint) or 'embedded'
@@ -45,7 +55,7 @@ param(
     [string]$ScriptSource = 'direct'
 )
 
-$ScriptVersion = '2.3'
+$ScriptVersion = '2.4'
 
 # Self-elevate when launched as a bare .ps1 without admin. The exe wrapper
 # already forces elevation via its UAC manifest, so this only fires on direct
@@ -80,6 +90,8 @@ $dsreg = dsregcmd /status 2>$null
 $EntraJoined  = [bool]($dsreg | Select-String -Quiet 'AzureAdJoined\s*:\s*YES')
 $DomainJoined = [bool](Get-CimInstance Win32_ComputerSystem).PartOfDomain
 $KeepM365     = ($Azure -or $EntraJoined) -and -not $RemoveOneDrive
+# -KeepOneDrive keeps OneDrive + Office hub; -Azure/Entra also keeps Teams.
+$KeepOD       = $KeepM365 -or $KeepOneDrive
 
 Write-Host "KIS Bloatware Cleaner v$ScriptVersion"
 Write-Host "Script source: $ScriptSource"
@@ -87,8 +99,16 @@ Write-Host "Running as   : $(whoami) (elevated)"
 Write-Host "Computer     : $env:COMPUTERNAME"
 Write-Host "Entra joined : $EntraJoined    Domain joined: $DomainJoined"
 Write-Host "Keep M365    : $KeepM365  (OneDrive/Teams/Office hub)"
+Write-Host "Keep OneDrive: $KeepOD"
 if ($DryRun) { Write-Host 'MODE         : DRY RUN -- nothing will be changed' }
 Write-Host "Log          : $LogFile"
+
+if ($KeepOneDrive -and $RemoveOneDrive) {
+    Write-Warning '-KeepOneDrive and -RemoveOneDrive contradict each other. Nothing was changed.'
+    Stop-Transcript | Out-Null
+    if (-not $Silent) { Read-Host 'Press Enter to close' | Out-Null }
+    exit 1
+}
 
 $script:Failures = 0
 # Removal counters live here (not in the UWP section) so the SupportAssist
@@ -346,6 +366,10 @@ if ($KeepM365) {
     $keepApps = 'Microsoft.OneDriveSync', 'MicrosoftTeams', 'MSTeams', 'Microsoft.MicrosoftOfficeHub'
     $UWPApps = $UWPApps | Where-Object { $keepApps -notcontains $_ }
     Write-Host "Entra mode: keeping $($keepApps -join ', ')"
+} elseif ($KeepOneDrive) {
+    $keepApps = 'Microsoft.OneDriveSync', 'Microsoft.MicrosoftOfficeHub'
+    $UWPApps = $UWPApps | Where-Object { $keepApps -notcontains $_ }
+    Write-Host "KeepOneDrive: keeping $($keepApps -join ', ')"
 }
 
 # One query each instead of one DISM/appx query per app name (v1 did ~119 of each).
@@ -393,8 +417,9 @@ if (-not $installedTargets -and -not $provTargets) { Write-Host 'No targeted app
 # Only the app is touched -- any <profile>\OneDrive user-files folder is left
 # alone.
 Write-Host "`n=== OneDrive (all profiles) ==="
-if ($KeepM365) {
-    Write-Host 'Entra-joined (or -Azure): keeping OneDrive. Use -RemoveOneDrive to override.'
+if ($KeepOD) {
+    if ($KeepOneDrive) { Write-Host '-KeepOneDrive: keeping OneDrive.' }
+    else { Write-Host 'Entra-joined (or -Azure): keeping OneDrive. Use -RemoveOneDrive to override.' }
 } else {
     Invoke-Step 'Stop running OneDrive processes' {
         Get-Process -Name 'OneDrive', 'OneDriveSetup' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
